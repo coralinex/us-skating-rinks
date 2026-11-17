@@ -1,6 +1,6 @@
 :root {
   --indoor: #1d4ed8; --outdoor: #ea580c; --unknown: #6b7280;
-  --ink: #111827; --muted: #5b6472; --line: #e3e6eb; --panel: #ffffff; --accent: #0284c7;
+  --ink: #111827; --muted: #5b6472; --line: #e3e6eb; --panel: #ffffff; --accent: #0284c7; --holiday: #db2777;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   color: var(--ink);
 }
@@ -24,7 +24,8 @@ legend + * { clear: both; }
 .row { display: flex; align-items: center; gap: 6px; padding: 3px 0; cursor: pointer; flex-wrap: wrap; }
 .row.sub { align-items: flex-start; margin-top: 4px; color: var(--muted); }
 .row.sub input { margin-top: 3px; }
-body:not(.time-filter) .row.sub { opacity: 0.5; }
+body:not(.time-filter) .row.sub:not(.always) { opacity: 0.5; }
+.row.sub.always { color: var(--ink); }
 input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); margin: 0; }
 select, input[type="time"], input[type="search"], button {
   font: inherit; color: inherit; border: 1px solid #cbd2db; border-radius: 6px; padding: 3px 6px; background: #fff;
@@ -33,6 +34,7 @@ select, input[type="time"], input[type="search"], button {
 
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid #fff; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.12); }
 .dot.indoor { background: var(--indoor); } .dot.outdoor { background: var(--outdoor); } .dot.unknown { background: var(--unknown); }
+.dot.holiday { background: #fff; border: 2.5px solid var(--holiday); box-shadow: none; }
 .dot.hollow { background: rgb(107 114 128 / 0.12); border-color: var(--unknown); box-shadow: none; margin-right: 4px; }
 
 #search { display: flex; gap: 6px; margin-bottom: 6px; }
@@ -50,11 +52,13 @@ footer { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 4px; 
 .rink-popup h2 { font-size: 15px; margin: 0 16px 2px 0; }
 .rink-popup p { margin: 4px 0 0; }
 .rink-popup .meta { color: var(--muted); }
+.rink-popup .season { margin-top: 8px; }
 .rink-popup .hours { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; margin-top: 8px; }
 .rink-popup .raw { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-weight: 600; font-size: 12px; }
 .badge.open { background: #dcfce7; color: #166534; }
 .badge.closed { background: #fee2e2; color: #991b1b; }
+.badge.season { background: #fce7f3; color: #9d174d; }
 .badge.unknown { background: #f1f3f5; color: #4b5563; border: 1px dashed #9ca3af; }
 .rink-popup .fields { display: grid; gap: 4px; margin-top: 10px; }
 .rink-popup .field { display: grid; grid-template-columns: 62px 1fr; gap: 8px; }

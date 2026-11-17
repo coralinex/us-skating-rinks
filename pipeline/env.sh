@@ -21,3 +21,4 @@ if ! command -v psql >/dev/null && command -v brew >/dev/null; then
   done
 fi
 export CONTEXT_JSON="${CONTEXT_JSON:-$ROOT/data/raw/context_overpass.json}"
+export CURATED_CSV="${CURATED_CSV:-$ROOT/data/holiday_rinks.csv}"

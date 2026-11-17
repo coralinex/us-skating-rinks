@@ -6,6 +6,7 @@ import type { Feature, MultiPolygon, Polygon } from 'geojson';
 import type { HoursQuery } from './hours';
 
 export type IndoorValue = 'yes' | 'no' | 'unknown';
+export type RinkType = 'year_round' | 'seasonal' | 'holiday' | 'unknown';
 
 export type AreaFilter =
   | { mode: 'off' }
@@ -14,6 +15,9 @@ export type AreaFilter =
 
 export interface FilterState {
   indoor: Set<IndoorValue>;
+  types: Set<RinkType>;
+  /** Hide rinks whose published season does not include today. */
+  inSeasonOnly: boolean;
   hours: HoursQuery;
   includeUnknownHours: boolean;
   area: AreaFilter;
@@ -23,14 +27,30 @@ export interface FilterState {
 export interface HoursResult {
   open: string[];
   unparseable: string[];
+  /** Ids whose published season excludes the queried time: closed, whatever their hours say. */
+  outOfSeason: string[];
+}
+
+/** Local calendar date as YYYY-MM-DD (the format of season_start / season_end). */
+export function isoDate(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
 export const METERS_PER_MILE = 1609.344;
 
-export function buildFilter(state: FilterState, hours: HoursResult): FilterSpecification {
+export function buildFilter(state: FilterState, hours: HoursResult, today = isoDate(new Date())): FilterSpecification {
   const all: ExpressionSpecification[] = [
     ['in', ['get', 'indoor'], ['literal', [...state.indoor]]],
+    ['in', ['get', 'rink_type'], ['literal', [...state.types]]],
   ];
+
+  if (state.inSeasonOnly) {
+    // Rinks with no published season dates are kept: unknown is not "closed".
+    all.push(['any',
+      ['!', ['has', 'season_start']],
+      ['all', ['<=', ['get', 'season_start'], today], ['>=', ['get', 'season_end'], today]]]);
+  }
 
   if (state.hours.mode !== 'any') {
     const any: ExpressionSpecification[] = [['in', ['get', 'id'], ['literal', hours.open]]];
@@ -39,6 +59,7 @@ export function buildFilter(state: FilterState, hours: HoursResult): FilterSpeci
       any.push(['in', ['get', 'id'], ['literal', hours.unparseable]]);
     }
     all.push(['any', ...any]);
+    if (hours.outOfSeason.length) all.push(['!', ['in', ['get', 'id'], ['literal', hours.outOfSeason]]]);
   }
 
   if (state.area.mode === 'radius') {

@@ -89,7 +89,7 @@ relations. A second query fetches the **named places that contain each rink**
 (arena buildings, sports centres, parks, schools/campuses), cached as
 `data/raw/context_overpass.json`.
 
-Current snapshot: **2,084 OSM elements → 1,973 rinks**.
+Current snapshot: **2,084 OSM elements → 1,973 rinks**, plus curated holiday and winter-season rinks not in OSM.
 
 | | count |
 |---|---|
@@ -122,6 +122,46 @@ containing it, or a sports-centre POI within 60 m) and:
 
 The info card always has a Website row: the rink's site, else its Facebook/
 Instagram page, else "Not listed · Search the web".
+
+### Holiday pop-up rinks (curated source)
+
+Holiday rinks are mostly **not in OpenStreetMap**: they exist for 6–10 weeks
+on a plaza, pier or parking lot. Of 13 well-known Southern California holiday
+rinks, OSM had one. They therefore come from a second, checked-in source:
+
+- `data/holiday_rinks.csv` — one row per rink: name, venue, address,
+  coordinates (venue-level), `season_start` / `season_end`, `opening_hours`
+  (OSM syntax, only when the rink publishes a regular schedule), website,
+  `source_url`, `verified_season` and `confidence`.
+- `load.sh` copies it into `rinks_curated_raw`; `transform.sql` merges it into
+  `rinks`. A curated rink within 250 m of an outdoor OSM rink enriches that row
+  (`source = 'osm+curated'`); the rest are inserted with `osm_type = 'curated'`.
+- Every rink gets a `rink_type`: `holiday` (all curated rinks, plus OSM
+  seasonal outdoor rinks south of 35°N or with a holiday-style name or
+  Nov–Jan opening dates), `seasonal` (winter only), `year_round` (indoor or
+  `seasonal=no`) or `unknown`.
+
+In the app: a **Type** filter, an **Only rinks in season today** toggle, a pink
+ring on holiday markers, and season dates on the card. A rink outside its
+published season is treated as closed by the "Open now / Open at" filter.
+
+Current coverage: **83 rinks in 23 states**, researched for the 2026–27 season
+by searching each major metro and checking official pages where one exists.
+Each row has a `confidence`: `high` (dates from the venue or organiser),
+`medium` (one or more local guides), `low` (conflicting, truncated or
+directory-only information). 77 rows have season dates; the rest are known to
+operate but had not published dates when checked. Coordinates are venue-level
+(geocoded), not the rink footprint.
+
+This is **not complete**: there is no national registry of pop-up rinks, and
+small-town or one-off rinks are missed. Metros searched without a confirmed
+2026–27 rink include Portland, Minneapolis, Milwaukee, Boston, Miami and
+Jacksonville. To add rinks, append rows to the CSV and re-run `load.sh` and
+`build_tiles.sh`. Dates change every year: re-verify each row per season and
+bump `verified_season`.
+
+Curated rinks whose season runs past mid-February (Rockefeller Center, Crown
+Center Ice Terrace, …) are typed `seasonal`, not `holiday`.
 
 ### Caveats
 

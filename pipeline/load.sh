@@ -35,4 +35,12 @@ else
     "CREATE TABLE rinks_context_raw (osm_type text, osm_id bigint, tags text, geom geometry(Geometry, 4326))"
 fi
 
+# Curated holiday rinks (not in OSM). Optional, like the context file.
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -c "TRUNCATE rinks_curated_raw"
+if [ -s "$CURATED_CSV" ]; then
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q \
+    -c "\\copy rinks_curated_raw FROM '$CURATED_CSV' WITH (FORMAT csv, HEADER true)"
+  echo "Loaded $(($(wc -l < "$CURATED_CSV") - 1)) curated rinks"
+fi
+
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$ROOT/db/transform.sql"

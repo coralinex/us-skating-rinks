@@ -20,6 +20,15 @@ postgres:
         id: text
         name: text
         name_source: text
+        rink_type: text
+        venue: text
+        season_start: text
+        season_end: text
+        verified_season: text
+        source: text
+        source_url: text
+        confidence: text
+        notes: text
         parent_name: text
         indoor: text
         seasonal: text

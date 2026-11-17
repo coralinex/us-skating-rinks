@@ -74,7 +74,16 @@ SELECT
     NULL::text          AS parent_osm,
     NULL::text          AS group_key,      -- facility this sheet collapses into
     NULL::integer       AS sheets,
-    NULL::text          AS sheet_names
+    NULL::text          AS sheet_names,
+    'osm'::text         AS source,
+    NULL::text          AS venue,
+    NULL::date          AS season_start,
+    NULL::date          AS season_end,
+    NULL::text          AS verified_season,
+    NULL::text          AS source_url,
+    NULL::text          AS confidence,
+    NULL::text          AS notes,
+    'unknown'::text     AS rink_type
 FROM parsed;
 
 UPDATE stage SET website_source = 'osm' WHERE website IS NOT NULL;
@@ -314,6 +323,99 @@ SELECT l_type, l_id, k_type, k_id FROM pairs WHERE pick = 1;
 
 SELECT pg_temp.merge_dupes() AS duplicates_merged;
 
+-- 6. Curated holiday rinks ------------------------------------------------------------
+-- data/holiday_rinks.csv: pop-up rinks researched from their official pages.
+-- A curated rink that OSM already has (an outdoor rink within 250 m) enriches
+-- that row and keeps its OSM identity; the rest are inserted as 'curated'.
+CREATE TEMP TABLE cur ON COMMIT DROP AS
+SELECT slug,
+       ('x' || left(md5(slug), 12))::bit(48)::bigint                     AS id,
+       nullif(btrim(name), '')            AS name,
+       nullif(btrim(venue), '')           AS venue,
+       nullif(btrim(address), '')         AS address,
+       nullif(btrim(city), '')            AS city,
+       nullif(btrim(state), '')           AS state,
+       ST_SetSRID(ST_MakePoint(lon::float8, lat::float8), 4326)::geometry(Point, 4326) AS geom,
+       CASE lower(btrim(indoor)) WHEN 'yes' THEN true WHEN 'no' THEN false END AS indoor,
+       nullif(btrim(season_start), '')::date AS season_start,
+       nullif(btrim(season_end), '')::date   AS season_end,
+       nullif(btrim(opening_hours), '')   AS opening_hours,
+       rink_clean_url(website)            AS website,
+       nullif(btrim(phone), '')           AS phone,
+       rink_clean_url(source_url)         AS source_url,
+       nullif(btrim(verified_season), '') AS verified_season,
+       nullif(btrim(confidence), '')      AS confidence,
+       nullif(btrim(notes), '')           AS notes
+FROM rinks_curated_raw;
+
+CREATE TEMP TABLE cur_match ON COMMIT DROP AS
+SELECT DISTINCT ON (c.slug) c.slug, s.osm_type, s.osm_id
+FROM cur c
+JOIN stage s ON ST_DWithin(s.geom::geography, c.geom::geography, 250)
+            -- an outdoor rink this close is the same rink; one OSM calls
+            -- indoor (covered pavilions) must also share the name
+            AND (s.indoor IS NOT TRUE OR lower(s.name) = lower(c.name))
+ORDER BY c.slug, (lower(s.name) = lower(c.name)) DESC NULLS LAST,
+         ST_Distance(s.geom::geography, c.geom::geography);
+
+UPDATE stage s SET
+    source            = 'osm+curated',
+    name              = c.name,
+    name_source       = 'curated',
+    venue             = c.venue,
+    indoor            = coalesce(c.indoor, s.indoor),
+    seasonal          = true,
+    season_start      = c.season_start,
+    season_end        = c.season_end,
+    opening_hours_raw = coalesce(c.opening_hours, s.opening_hours_raw),
+    website           = coalesce(c.website, s.website),
+    website_source    = CASE WHEN c.website IS NOT NULL THEN 'curated' ELSE s.website_source END,
+    phone             = coalesce(c.phone, s.phone),
+    addr_housenumber  = CASE WHEN c.address IS NOT NULL THEN NULL ELSE s.addr_housenumber END,
+    addr_street       = coalesce(c.address, s.addr_street),
+    addr_city         = coalesce(c.city, s.addr_city),
+    addr_state        = coalesce(c.state, s.addr_state),
+    verified_season   = c.verified_season,
+    source_url        = c.source_url,
+    confidence        = c.confidence,
+    notes             = c.notes
+FROM cur c JOIN cur_match m USING (slug)
+WHERE (s.osm_type, s.osm_id) = (m.osm_type, m.osm_id);
+
+INSERT INTO stage (osm_type, osm_id, name, geom, indoor, seasonal, opening_hours_raw,
+                   website, website_source, phone, addr_street, addr_city, addr_state, tags,
+                   name_source, source, venue, season_start, season_end,
+                   verified_season, source_url, confidence, notes, rink_type)
+SELECT 'curated', c.id, c.name, c.geom, c.indoor, true, c.opening_hours,
+       c.website, CASE WHEN c.website IS NOT NULL THEN 'curated' END, c.phone,
+       c.address, c.city, c.state, jsonb_build_object('curated:slug', c.slug),
+       'curated', 'curated', c.venue, c.season_start, c.season_end,
+       c.verified_season, c.source_url, c.confidence, c.notes, 'holiday'
+FROM cur c
+WHERE NOT EXISTS (SELECT 1 FROM cur_match m WHERE m.slug = c.slug);
+
+-- 7. Rink type ----------------------------------------------------------------------------
+--   holiday    pop-up rink set up for the holiday season: curated rinks that
+--              close by mid-February, plus OSM seasonal outdoor rinks that cannot be natural ice
+--              (south of 35°N) or say so in their name / opening dates
+--   seasonal   open in winter only (mostly flooded park rinks)
+--   year_round indoor, or tagged seasonal=no
+--   unknown    OSM says nothing either way
+UPDATE stage SET rink_type = CASE
+    -- Curated rinks whose season runs past mid-February are winter-season
+    -- rinks (Rockefeller Center, Crown Center, ...), not holiday pop-ups.
+    WHEN source <> 'osm' AND season_end > make_date(extract(year FROM season_end)::int, 2, 14)
+                         AND extract(month FROM season_end) < 7 THEN 'seasonal'
+    WHEN source <> 'osm' THEN 'holiday'
+    WHEN seasonal AND indoor IS NOT TRUE AND (
+            ST_Y(geom) < 35
+         OR name ~* '\m(holiday|christmas|xmas|winter ?fest|winter village|winter wonderland|winterland|winter skate|on ice|pop.?up)\M'
+         OR opening_hours_raw ~* '^(nov|dec)[^;]*-\s*(jan|feb)')
+        THEN 'holiday'
+    WHEN seasonal THEN 'seasonal'
+    WHEN indoor OR seasonal = false THEN 'year_round'
+    ELSE 'unknown' END;
+
 UPDATE stage SET
     sheets      = CASE WHEN sheets >= 2 THEN sheets END,      -- 1 mapped sheet says nothing
     sheet_names = CASE WHEN sheets >= 2 THEN
@@ -327,6 +429,7 @@ INSERT INTO rinks AS r (
     indoor, seasonal, opening_hours_raw, hours_status,
     website, website_source, social, phone, email, operator, sports, sheets, sheet_names,
     addr_housenumber, addr_street, addr_city, addr_state, addr_postcode,
+    source, rink_type, venue, season_start, season_end, verified_season, source_url, confidence, notes,
     tags, updated_at)
 SELECT
     osm_type, osm_id, name, name_source, parent_name, parent_osm, geom, footprint,
@@ -335,6 +438,7 @@ SELECT
     CASE WHEN opening_hours_raw IS NULL THEN 'unknown' ELSE 'known' END,
     website, website_source, social, phone, email, operator, sports, sheets, sheet_names,
     addr_housenumber, addr_street, addr_city, addr_state, addr_postcode,
+    source, rink_type, venue, season_start, season_end, verified_season, source_url, confidence, notes,
     tags, now()
 FROM stage
 ON CONFLICT (osm_type, osm_id) DO UPDATE SET
@@ -350,6 +454,10 @@ ON CONFLICT (osm_type, osm_id) DO UPDATE SET
     addr_housenumber = EXCLUDED.addr_housenumber, addr_street = EXCLUDED.addr_street,
     addr_city = EXCLUDED.addr_city, addr_state = EXCLUDED.addr_state,
     addr_postcode = EXCLUDED.addr_postcode,
+    source = EXCLUDED.source, rink_type = EXCLUDED.rink_type, venue = EXCLUDED.venue,
+    season_start = EXCLUDED.season_start, season_end = EXCLUDED.season_end,
+    verified_season = EXCLUDED.verified_season, source_url = EXCLUDED.source_url,
+    confidence = EXCLUDED.confidence, notes = EXCLUDED.notes,
     tags = EXCLUDED.tags, updated_at = EXCLUDED.updated_at;
 
 DELETE FROM rinks r
@@ -375,5 +483,7 @@ SELECT count(*) FILTER (WHERE indoor)                   AS indoor,
        count(*) FILTER (WHERE indoor = false)           AS outdoor,
        count(*) FILTER (WHERE indoor IS NULL)           AS indoor_unknown,
        count(*) FILTER (WHERE hours_status = 'known')   AS hours_known,
-       (SELECT count(*) FROM rinks_raw) - count(*)      AS merged_away
+       (SELECT count(*) FROM rinks_raw) - count(*) FILTER (WHERE osm_type <> 'curated') AS merged_away
 FROM rinks;
+
+SELECT rink_type, source, count(*) FROM rinks GROUP BY 1, 2 ORDER BY 1, 2;

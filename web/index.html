@@ -25,6 +25,17 @@
       </fieldset>
 
       <fieldset>
+        <legend>Type</legend>
+        <label class="chip"><input type="checkbox" name="type" value="year_round" checked />Year-round</label>
+        <label class="chip"><input type="checkbox" name="type" value="seasonal" checked />Winter season</label>
+        <label class="chip"><input type="checkbox" name="type" value="holiday" checked /><span class="dot holiday"></span>Holiday pop-up</label>
+        <label class="chip"><input type="checkbox" name="type" value="unknown" checked />Not tagged</label>
+        <label class="row sub always"><input type="checkbox" id="in-season" />
+          <span>Only rinks in season today</span></label>
+        <p class="note">Holiday pop-ups are researched each season and carry their dates. Rinks without published dates always count as in season.</p>
+      </fieldset>
+
+      <fieldset>
         <legend>Hours</legend>
         <label class="row"><input type="radio" name="hours" value="any" checked />Any time</label>
         <label class="row"><input type="radio" name="hours" value="now" />Open now</label>

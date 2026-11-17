@@ -111,3 +111,19 @@ export function describeHours(raw: string | undefined | null, lat: number, lon: 
   try { pretty = oh.prettifyValue(); } catch { /* keep raw */ }
   return { state, label, pretty };
 }
+
+export interface Season { start?: string; end?: string } // YYYY-MM-DD, inclusive
+
+/** 'before' | 'in' | 'after' the published season, or undefined when no dates are known. */
+export function seasonPhase(season: Season, at: Date): 'before' | 'in' | 'after' | undefined {
+  if (!season.start || !season.end) return undefined;
+  const p = (n: number) => String(n).padStart(2, '0');
+  const day = `${at.getFullYear()}-${p(at.getMonth() + 1)}-${p(at.getDate())}`;
+  return day < season.start ? 'before' : day > season.end ? 'after' : 'in';
+}
+
+export function formatDay(iso: string, withYear = true): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('en-US',
+    withYear ? { month: 'short', day: 'numeric', year: 'numeric' } : { month: 'short', day: 'numeric' });
+}

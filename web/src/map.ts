@@ -9,12 +9,13 @@ import { Protocol } from 'pmtiles';
 import type { Feature, FeatureCollection, Point } from 'geojson';
 import './style.css';
 import { BASEMAP_STYLE, DEFAULT_VIEW, GEOCODER_URL, SOURCE_LAYER, TILE_MAXZOOM, TILE_SOURCE } from './config';
-import { buildFilter, circlePolygon, type AreaFilter, type FilterState, type HoursResult, type IndoorValue } from './filters';
-import { describeHours, hoursState, queryMoment, type HoursQuery } from './hours';
+import { buildFilter, circlePolygon, type AreaFilter, type FilterState, type HoursResult, type IndoorValue, type RinkType } from './filters';
+import { describeHours, formatDay, hoursState, queryMoment, seasonPhase, wallClockAt, type HoursQuery } from './hours';
 import { getIsochrone, ISOCHRONE_ATTRIBUTION } from './isochrone';
 
 const RINKS = 'rinks';
 const COLORS = { yes: '#1d4ed8', no: '#ea580c', unknown: '#6b7280' };
+const HOLIDAY_RING = '#db2777';
 
 // --- Tile source: the one static/realtime switch ---------------------------
 maplibregl.setWorkerUrl(workerUrl);
@@ -64,6 +65,8 @@ map.on('moveend', writeView);
 // --- Filter state ------------------------------------------------------------
 const state: FilterState = {
   indoor: new Set<IndoorValue>(['yes', 'no', 'unknown']),
+  types: new Set<RinkType>(['year_round', 'seasonal', 'holiday', 'unknown']),
+  inSeasonOnly: false,
   hours: { mode: 'any' },
   includeUnknownHours: true,
   area: { mode: 'off' },
@@ -73,8 +76,8 @@ let origin: [number, number] | null = null;
 let originMarker: maplibregl.Marker | null = null;
 
 /** Every rink seen in any loaded tile: id -> what hours evaluation needs. */
-const seen = new Map<string, { oh?: string; lat: number; lon: number }>();
-let hoursResult: HoursResult = { open: [], unparseable: [] };
+const seen = new Map<string, { oh?: string; lat: number; lon: number; start?: string; end?: string }>();
+let hoursResult: HoursResult = { open: [], unparseable: [], outOfSeason: [] };
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 const countEl = $('#count');
@@ -87,7 +90,7 @@ function collectFeatures(): boolean {
     const id = f.properties.id as string;
     if (seen.has(id) || f.geometry.type !== 'Point') continue;
     const [lon, lat] = f.geometry.coordinates;
-    seen.set(id, { oh: f.properties.opening_hours, lat, lon });
+    seen.set(id, { oh: f.properties.opening_hours, lat, lon, start: f.properties.season_start, end: f.properties.season_end });
     added = true;
   }
   return added;
@@ -96,15 +99,20 @@ function collectFeatures(): boolean {
 function evaluateHours(q: HoursQuery): HoursResult {
   const open: string[] = [];
   const unparseable: string[] = [];
-  if (q.mode === 'any') return { open, unparseable };
+  const outOfSeason: string[] = [];
+  if (q.mode === 'any') return { open, unparseable, outOfSeason };
   const now = new Date();
   for (const [id, r] of seen) {
-    if (!r.oh) continue; // hours_status = 'unknown' handles these in the filter
-    const s = hoursState(r.oh, r.lat, r.lon, queryMoment(q, r.lat, r.lon, now));
+    if (!r.oh && !r.start) continue; // hours_status = 'unknown' handles these in the filter
+    const at = queryMoment(q, r.lat, r.lon, now);
+    const phase = seasonPhase(r, at);
+    if (phase === 'before' || phase === 'after') { outOfSeason.push(id); continue; }
+    if (!r.oh) continue;
+    const s = hoursState(r.oh, r.lat, r.lon, at);
     if (s === 'open') open.push(id);
     else if (s === 'unknown') unparseable.push(id);
   }
-  return { open, unparseable };
+  return { open, unparseable, outOfSeason };
 }
 
 function applyFilters() {
@@ -121,7 +129,7 @@ function applyFilters() {
     ['==', ['get', 'hours_status'], 'unknown'],
     ['in', ['get', 'id'], ['literal', hoursResult.unparseable]]];
   map.setPaintProperty(RINKS, 'circle-opacity', hollow ? ['case', unknownHours, 0.12, 1] : 1);
-  map.setPaintProperty(RINKS, 'circle-stroke-color', hollow ? ['case', unknownHours, COLOR_EXPR, '#ffffff'] : '#ffffff');
+  map.setPaintProperty(RINKS, 'circle-stroke-color', hollow ? ['case', IS_HOLIDAY, HOLIDAY_RING, unknownHours, COLOR_EXPR, '#ffffff'] : STROKE_EXPR);
   document.body.classList.toggle('time-filter', hollow);
 }
 
@@ -129,11 +137,14 @@ function updateCount() {
   if (!map.getLayer(RINKS)) return;
   const ids = new Set(map.queryRenderedFeatures({ layers: [RINKS] }).map((f) => f.properties.id));
   const n = ids.size;
-  const filtered = state.indoor.size < 3 || state.hours.mode !== 'any' || state.area.mode !== 'off';
+  const filtered = state.indoor.size < 3 || state.types.size < 4 || state.inSeasonOnly || state.hours.mode !== 'any' || state.area.mode !== 'off';
   countEl.textContent = `${n.toLocaleString()} rink${n === 1 ? '' : 's'} ${filtered ? 'match' : ''} in view`.replace('  ', ' ');
 }
 
 const COLOR_EXPR: ExpressionSpecification = ['match', ['get', 'indoor'], 'yes', COLORS.yes, 'no', COLORS.no, COLORS.unknown];
+// Holiday pop-ups get a pink ring so they stand out from permanent rinks.
+const IS_HOLIDAY: ExpressionSpecification = ['==', ['get', 'rink_type'], 'holiday'];
+const STROKE_EXPR: ExpressionSpecification = ['case', IS_HOLIDAY, HOLIDAY_RING, '#ffffff'];
 
 map.on('load', () => {
   map.addSource(RINKS, rinkSource());
@@ -144,11 +155,14 @@ map.on('load', () => {
 
   map.addLayer({
     id: RINKS, type: 'circle', source: RINKS, 'source-layer': SOURCE_LAYER,
+    // Draw holiday rinks on top of the dense permanent ones.
+    layout: { 'circle-sort-key': ['case', IS_HOLIDAY, 1, 0] },
     paint: {
       'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 2.6, 7, 4.5, 11, 6.5, 15, 9],
       'circle-color': COLOR_EXPR,
-      'circle-stroke-color': '#ffffff',
-      'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 3, 0.6, 10, 1.6],
+      'circle-stroke-color': STROKE_EXPR,
+      'circle-stroke-width': ['interpolate', ['linear'], ['zoom'],
+        3, ['case', IS_HOLIDAY, 1.4, 0.6], 10, ['case', IS_HOLIDAY, 2.6, 1.6]],
     },
   });
   map.addLayer({
@@ -221,13 +235,34 @@ function popupContent(f: MapGeoJSONFeature): HTMLElement {
 
   // One line of facts: setting, season, sheets, sports.
   const facts = [p.indoor === 'yes' ? 'Indoor' : p.indoor === 'no' ? 'Outdoor' : 'Indoor/outdoor not tagged'];
-  if (p.seasonal === 'yes') facts.push('Seasonal');
+  if (p.rink_type === 'holiday') facts.unshift('Holiday pop-up');
+  else if (p.seasonal === 'yes') facts.push('Winter season');
   if (Number(p.sheets) >= 2) facts.push(`${p.sheets} ice sheets`);
   root.append(el('p', facts.join(' · '), 'meta'));
+  if (str('venue')) root.append(el('p', `At ${str('venue')}`, 'meta'));
   if (unnamed) root.append(el('p', 'No name in OpenStreetMap', 'meta'));
   else if (str('name_source') === 'parent') root.append(el('p', 'Named after the place it is in', 'meta'));
 
+  // Published season (holiday pop-ups): dates plus where today falls.
+  const season = { start: str('season_start'), end: str('season_end') };
+  const phase = seasonPhase(season, wallClockAt(lat, lon, new Date()));
+  if (phase) {
+    const line = el('p', undefined, 'season');
+    line.append(el('span',
+      phase === 'in' ? `In season · through ${formatDay(season.end!, false)}`
+        : phase === 'before' ? `Opens ${formatDay(season.start!, false)}` : 'Season ended',
+      `badge ${phase === 'in' ? 'season' : 'unknown'}`));
+    line.append(el('span', ` ${formatDay(season.start!)} – ${formatDay(season.end!)}`, 'muted'));
+    root.append(line);
+  }
+
   const h = describeHours(str('opening_hours'), lat, lon);
+  if (phase === 'before' || phase === 'after') {
+    h.state = 'closed';
+    h.label = phase === 'before' ? 'Not open yet' : 'Closed for the season';
+  } else if (phase === 'in' && !str('opening_hours')) {
+    h.label = 'Hours vary — check the website';
+  }
   const hours = el('p', undefined, 'hours');
   hours.append(el('span', h.label, `badge ${h.state}`));
   if (h.pretty) hours.append(el('span', h.pretty, 'raw'));
@@ -262,6 +297,15 @@ function popupContent(f: MapGeoJSONFeature): HTMLElement {
   if (str('sheet_names')) fields.append(row('Sheets', str('sheet_names')!));
   if (str('sports')) fields.append(row('Sports', str('sports')!));
   if (str('operator') && str('operator') !== name) fields.append(row('Operator', str('operator')!));
+  if (str('notes')) fields.append(row('Note', str('notes')!));
+  if (str('verified_season')) {
+    const v = document.createDocumentFragment();
+    v.append(`${str('verified_season')} season`);
+    if (str('confidence') && str('confidence') !== 'high') v.append(el('span', ` · ${str('confidence')} confidence`, 'muted'));
+    const src = str('source_url');
+    if (src && /^https?:\/\//i.test(src)) v.append(' · ', link('source', src));
+    fields.append(row('Verified', v));
+  }
   root.append(fields);
 
   const links = el('p', undefined, 'links');
@@ -361,6 +405,17 @@ document.querySelectorAll<HTMLInputElement>('input[name="indoor"]').forEach((box
     if (box.checked) state.indoor.add(v); else state.indoor.delete(v);
     applyFilters();
   }));
+
+document.querySelectorAll<HTMLInputElement>('input[name="type"]').forEach((box) =>
+  box.addEventListener('change', () => {
+    const v = box.value as RinkType;
+    if (box.checked) state.types.add(v); else state.types.delete(v);
+    applyFilters();
+  }));
+$<HTMLInputElement>('#in-season').addEventListener('change', (e) => {
+  state.inSeasonOnly = (e.target as HTMLInputElement).checked;
+  applyFilters();
+});
 
 function readHours() {
   const mode = $<HTMLInputElement>('input[name="hours"]:checked').value as HoursQuery['mode'];
