@@ -76,10 +76,25 @@ upserts on `(osm_type, osm_id)` and removes rinks deleted from OSM.
 
 ### Deploy (static)
 
-`cd web && npm run build`, then upload `web/dist/` to any static host. To host
-the tiles separately (Cloudflare R2, Azure Blob, …) set
-`VITE_TILE_SOURCE=pmtiles://https://…/rinks.pmtiles`; the host must support
-HTTP range requests and CORS. See `web/.env.example` for all settings.
+**GitHub Pages** (set up in `.github/workflows/deploy.yml`):
+
+1. Repo **Settings → Pages → Build and deployment → Source: GitHub Actions**
+   (one time). Pages needs a public repo, or a paid GitHub plan for a private one.
+2. Push to `main`. Any change under `web/` rebuilds and publishes the site at
+   `https://<user>.github.io/<repo>/`. To publish new data, re-run the pipeline
+   locally and commit `web/public/rinks.pmtiles`.
+
+The build uses relative asset paths (`web/vite.config.ts`), so `web/dist/` also
+works on any other static host (Cloudflare Pages, Netlify, S3, …):
+`cd web && npm run build` and upload `web/dist/`. The host must support HTTP
+range requests for `rinks.pmtiles` (GitHub Pages, Cloudflare and Netlify do).
+To host the tiles separately, set `VITE_TILE_SOURCE=pmtiles://https://…/rinks.pmtiles`
+(as a repository variable for the workflow). See `web/.env.example`.
+
+Before sending real traffic: drive time uses the FOSSGIS Valhalla demo server
+and place search uses public Nominatim. Both are fair-use services for light
+traffic; switch to OpenRouteService (`VITE_ORS_API_KEY`) or your own instances
+if the site gets busy.
 
 ## Data
 
@@ -208,6 +223,6 @@ routing service; search text is sent to Nominatim.
 
 ## Not done yet
 
-- Hosting / public deploy, README screenshots.
+- README screenshots.
 - Footprint layer at high zoom.
 - Server-side filtering (Postgres function source) and self-hosted routing.
