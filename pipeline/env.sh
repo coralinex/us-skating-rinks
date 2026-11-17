@@ -20,3 +20,4 @@ if ! command -v psql >/dev/null && command -v brew >/dev/null; then
     if [ -x "$d/psql" ]; then PATH="$d:$PATH"; break; fi
   done
 fi
+export CONTEXT_JSON="${CONTEXT_JSON:-$ROOT/data/raw/context_overpass.json}"

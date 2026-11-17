@@ -19,11 +19,21 @@ postgres:
       properties:
         id: text
         name: text
+        name_source: text
+        parent_name: text
         indoor: text
         seasonal: text
         hours_status: text
         opening_hours: text
         website: text
+        website_source: text
+        social: text
         phone: text
+        email: text
+        operator: text
+        sports: text
+        sheets: int4
+        sheet_names: text
         address: text
+        city: text
         state: text

@@ -182,41 +182,94 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, cls?: 
   return n;
 }
 
+function link(text: string, href: string, cls?: string) {
+  const a = el('a', text, cls);
+  a.href = href;
+  if (/^https?:/i.test(href)) { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
+  return a;
+}
+
+/** "https://www.example.com/rink/" -> "example.com/rink" */
+function displayUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    const path = u.pathname.replace(/\/+$/, '');
+    const text = u.hostname.replace(/^www\./, '') + path;
+    return text.length > 38 ? `${text.slice(0, 37)}…` : text;
+  } catch {
+    return url;
+  }
+}
+
+function row(label: string, value: Node | string) {
+  const r = el('div', undefined, 'field');
+  r.append(el('span', label, 'label'));
+  const v = el('span', undefined, 'value');
+  v.append(value);
+  r.append(v);
+  return r;
+}
+
 function popupContent(f: MapGeoJSONFeature): HTMLElement {
-  const p = f.properties as Record<string, string | undefined>;
+  const p = f.properties as Record<string, string | number | undefined>;
+  const str = (k: string) => (p[k] == null || p[k] === '' ? undefined : String(p[k]));
   const [lon, lat] = (f.geometry as Point).coordinates;
   const root = el('div', undefined, 'rink-popup');
-  root.append(el('h2', p.name || 'Ice rink'));
+  const name = str('name') || 'Ice rink';
+  const unnamed = str('name_source') === 'none';
+  root.append(el('h2', name));
 
-  const setting = p.indoor === 'yes' ? 'Indoor' : p.indoor === 'no' ? 'Outdoor' : 'Indoor/outdoor not tagged';
-  const tags = el('p', setting + (p.seasonal === 'yes' ? ' · Seasonal' : ''), 'meta');
-  root.append(tags);
+  // One line of facts: setting, season, sheets, sports.
+  const facts = [p.indoor === 'yes' ? 'Indoor' : p.indoor === 'no' ? 'Outdoor' : 'Indoor/outdoor not tagged'];
+  if (p.seasonal === 'yes') facts.push('Seasonal');
+  if (Number(p.sheets) >= 2) facts.push(`${p.sheets} ice sheets`);
+  root.append(el('p', facts.join(' · '), 'meta'));
+  if (unnamed) root.append(el('p', 'No name in OpenStreetMap', 'meta'));
+  else if (str('name_source') === 'parent') root.append(el('p', 'Named after the place it is in', 'meta'));
 
-  if (p.address) root.append(el('p', p.address));
-
-  const h = describeHours(p.opening_hours, lat, lon);
+  const h = describeHours(str('opening_hours'), lat, lon);
   const hours = el('p', undefined, 'hours');
   hours.append(el('span', h.label, `badge ${h.state}`));
   if (h.pretty) hours.append(el('span', h.pretty, 'raw'));
   root.append(hours);
 
+  const fields = el('div', undefined, 'fields');
+  const website = str('website');
+  if (website && /^https?:\/\//i.test(website)) {
+    const v = document.createDocumentFragment();
+    v.append(link(displayUrl(website), website));
+    if (str('website_source') === 'parent' && str('parent_name') && str('parent_name') !== name) {
+      v.append(el('span', ` (${str('parent_name')})`, 'muted'));
+    }
+    fields.append(row('Website', v));
+  } else {
+    // No website in OSM: fall back to a social page, then to a web search.
+    const v = document.createDocumentFragment();
+    const social = str('social');
+    if (social && /^https?:\/\//i.test(social)) v.append(link(displayUrl(social), social));
+    else {
+      v.append(el('span', 'Not listed', 'muted'));
+      if (!unnamed) {
+        const q = [name, str('city'), str('state')].filter(Boolean).join(' ');
+        v.append(' · ', link('Search the web', `https://duckduckgo.com/?q=${encodeURIComponent(q)}`));
+      }
+    }
+    fields.append(row('Website', v));
+  }
+  if (str('address')) fields.append(row('Address', str('address')!));
+  if (str('phone')) fields.append(row('Phone', link(str('phone')!, `tel:${str('phone')!.replace(/[^\d+]/g, '')}`)));
+  if (str('email') && /^[^\s@]+@[^\s@]+$/.test(str('email')!)) fields.append(row('Email', link(str('email')!, `mailto:${str('email')}`)));
+  if (str('sheet_names')) fields.append(row('Sheets', str('sheet_names')!));
+  if (str('sports')) fields.append(row('Sports', str('sports')!));
+  if (str('operator') && str('operator') !== name) fields.append(row('Operator', str('operator')!));
+  root.append(fields);
+
   const links = el('p', undefined, 'links');
-  if (p.website && /^https?:\/\//i.test(p.website)) {
-    const a = el('a', 'Website');
-    a.href = p.website; a.target = '_blank'; a.rel = 'noopener noreferrer';
-    links.append(a);
-  }
-  if (p.phone) {
-    const a = el('a', p.phone);
-    a.href = `tel:${p.phone.replace(/[^\d+]/g, '')}`;
-    links.append(a);
-  }
-  const m = /^([nwr])(\d+)$/.exec(p.id ?? '');
+  links.append(link('Directions', `https://www.openstreetmap.org/directions?to=${lat.toFixed(6)},${lon.toFixed(6)}`));
+  const m = /^([nwr])(\d+)$/.exec(str('id') ?? '');
   if (m) {
-    const a = el('a', 'OpenStreetMap');
-    a.href = `https://www.openstreetmap.org/${{ n: 'node', w: 'way', r: 'relation' }[m[1] as 'n' | 'w' | 'r']}/${m[2]}`;
-    a.target = '_blank'; a.rel = 'noopener noreferrer';
-    links.append(a);
+    const type = { n: 'node', w: 'way', r: 'relation' }[m[1] as 'n' | 'w' | 'r'];
+    links.append(link('View / fix on OpenStreetMap', `https://www.openstreetmap.org/${type}/${m[2]}`));
   }
   root.append(links);
   return root;
@@ -225,7 +278,7 @@ function popupContent(f: MapGeoJSONFeature): HTMLElement {
 function onMapClick(e: maplibregl.MapMouseEvent) {
   const hit = map.queryRenderedFeatures(e.point, { layers: [RINKS] })[0];
   if (hit) {
-    new maplibregl.Popup({ maxWidth: '300px', offset: 8 })
+    new maplibregl.Popup({ maxWidth: '320px', offset: 8 })
       .setLngLat((hit.geometry as Point).coordinates as [number, number])
       .setDOMContent(popupContent(hit))
       .addTo(map);

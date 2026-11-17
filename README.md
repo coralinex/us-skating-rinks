@@ -53,7 +53,7 @@ pipeline/local_db.sh start
 export DATABASE_URL=postgresql://localhost:54329/rinks
 
 # 2. Pipeline
-pipeline/fetch_overpass.sh   # optional: data/raw/rinks_overpass.json is cached in the repo
+pipeline/fetch_overpass.sh   # optional: data/raw/*.json is cached in the repo (slow: ~10 batched queries)
 pipeline/load.sh             # schema.sql → ogr2ogr → transform.sql
 pipeline/build_tiles.sh      # → web/public/rinks.pmtiles
 
@@ -85,15 +85,43 @@ HTTP range requests and CORS. See `web/.env.example` for all settings.
 
 Source: OpenStreetMap via Overpass — `leisure=ice_rink`, plus
 `sport=ice_skating` on `leisure=sports_centre|pitch`, as nodes, ways and
-relations. Current snapshot: **2,084 OSM elements → 2,061 rinks** after dedupe.
+relations. A second query fetches the **named places that contain each rink**
+(arena buildings, sports centres, parks, schools/campuses), cached as
+`data/raw/context_overpass.json`.
+
+Current snapshot: **2,084 OSM elements → 1,973 rinks**.
 
 | | count |
 |---|---|
-| Indoor (`indoor`/`covered`/`building` tag) | 730 |
-| Outdoor | 512 |
-| Indoor/outdoor not tagged | 819 |
-| Has `opening_hours` | **62** (3%) |
-| Unnamed (shown as "Ice rink") | 936 |
+| Name from the rink's own OSM tags | 1,073 |
+| Name inherited from the surrounding place | 622 |
+| Still unnamed (shown as "Ice rink") | 278 |
+| Has a website | 616 (197 inherited from the surrounding place) |
+| Has an address (at least street or city) | 861 |
+| Indoor / outdoor / not tagged | 852 / 475 / 646 |
+| Has `opening_hours` | **64** (3%) |
+
+### How names and contact details are derived
+
+OSM often maps the ice sheet itself as "Rink 1", "Blue Rink" or with no name,
+and puts the real name, website and address on the building or park around it.
+`db/transform.sql` therefore finds each rink's *parent* (smallest named area
+containing it, or a sports-centre POI within 60 m) and:
+
+- **Generic or missing name + venue parent** (sports centre, arena, anything
+  ice-related): the rink takes the venue's name, and all sheets of one venue
+  collapse into a single rink with `sheets` and `sheet_names`
+  ("Rink 1, Rink 2, Rink 3").
+- **Generic or missing name + other parent** (park, school, generic building):
+  "Ice rink at Lions Park" / "Bryant Park – The Rink".
+- **Website, phone, email, operator, address** are inherited when the rink has
+  none (`website_source = 'parent'`; the info card names the source).
+- A rink inside a building outline is marked indoor.
+- `rink_name_is_generic()` in `db/schema.sql` defines "generic"; 12 such rinks
+  have no named place around them and keep their OSM name.
+
+The info card always has a Website row: the rink's site, else its Facebook/
+Instagram page, else "Not listed · Search the web".
 
 ### Caveats
 
@@ -104,10 +132,13 @@ relations. Current snapshot: **2,084 OSM elements → 2,061 rinks** after dedupe
 - **Hours are evaluated in the rink's local time**, not the viewer's
   (`tz-lookup` + `opening_hours`).
 - **Outdoor is partly inferred.** OSM rarely tags `indoor=no`; a rink tagged
-  `seasonal=*` with no `building` is treated as outdoor (`db/transform.sql`).
+  `seasonal=*` that is not in a building is treated as outdoor (`db/transform.sql`).
   Everything else without an explicit tag is "not tagged".
 - **Seasonal outdoor rinks** (park and holiday rinks) are patchy in OSM.
 - **`ice_rink` includes hockey-only rinks.** Nothing here promises public skating.
+- **Inherited names can be wrong** where OSM's enclosing area is not really
+  the rink's venue (e.g. a rink in a mall takes "Ice rink at <mall>"). The card
+  says "Named after the place it is in" and links to the OSM object to fix it.
 - **Dedupe** (`ST_DWithin` on geography): a node within 60 m of a rink
   outline (when at least one of the two is unnamed), or two same-named
   features within 150 m, collapse into one; the survivor inherits missing name/hours/contact fields. Separately
@@ -130,8 +161,8 @@ routing service; search text is sent to Nominatim.
 
 - `SELECT postgis_version()` → 3.6; 0 null/invalid geometries.
 - `EXPLAIN` on `ST_DWithin(geom::geography, …)` uses `rinks_geog_gix`.
-- PMTiles: all 2,061 points present at zoom 0 and zoom 14.
-- Radius filter in the browser vs. SQL at Minneapolis (−93.265, 44.978), 10 mi: 67 = 67.
+- PMTiles: all points present at zoom 0 and zoom 14.
+- Radius filter in the browser vs. SQL at Minneapolis (−93.265, 44.978), 10 mi: browser count = SQL count.
 - 30-minute drive-time polygon around Minneapolis is plausible (231 rinks inside).
 - Same frontend against Martin with only `VITE_TILE_SOURCE` changed: same rinks.
 
