@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>US Ice Rink Map</title>
+    <meta name="description" content="Every ice skating rink in the US from OpenStreetMap, filterable by hours, indoor/outdoor and drive time." />
+  </head>
+  <body>
+    <div id="map" aria-label="Map of US ice rinks"></div>
+
+    <button id="panel-toggle" type="button" aria-controls="panel" aria-expanded="true">Filters</button>
+
+    <aside id="panel" aria-label="Filters">
+      <header>
+        <h1>US Ice Rinks</h1>
+        <p id="count" aria-live="polite">Loading…</p>
+      </header>
+
+      <fieldset>
+        <legend>Setting</legend>
+        <label class="chip"><input type="checkbox" name="indoor" value="yes" checked /><span class="dot indoor"></span>Indoor</label>
+        <label class="chip"><input type="checkbox" name="indoor" value="no" checked /><span class="dot outdoor"></span>Outdoor</label>
+        <label class="chip"><input type="checkbox" name="indoor" value="unknown" checked /><span class="dot unknown"></span>Not tagged</label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Hours</legend>
+        <label class="row"><input type="radio" name="hours" value="any" checked />Any time</label>
+        <label class="row"><input type="radio" name="hours" value="now" />Open now</label>
+        <label class="row"><input type="radio" name="hours" value="at" />Open at
+          <select id="hours-day" aria-label="Day">
+            <option value="1">Mon</option><option value="2">Tue</option><option value="3">Wed</option>
+            <option value="4">Thu</option><option value="5">Fri</option><option value="6">Sat</option>
+            <option value="0">Sun</option>
+          </select>
+          <input id="hours-time" type="time" value="18:00" aria-label="Time" />
+        </label>
+        <label class="row sub"><input type="checkbox" id="hours-unknown" checked />
+          <span><span class="dot hollow"></span>Also show rinks with hours not listed</span></label>
+        <p class="note" id="hours-note">Times are local to each rink. Most rinks in OpenStreetMap don’t list hours — they are “unknown”, not closed.</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Near</legend>
+        <form id="search" role="search">
+          <input id="search-q" type="search" placeholder="City, address or ZIP" aria-label="Search for a place" autocomplete="off" />
+          <button type="submit">Go</button>
+        </form>
+        <label class="row"><input type="radio" name="area" value="off" checked />Anywhere</label>
+        <label class="row"><input type="radio" name="area" value="radius" />Within
+          <select id="radius-miles" aria-label="Miles">
+            <option>5</option><option selected>10</option><option>25</option><option>50</option><option>100</option>
+          </select> miles
+        </label>
+        <label class="row"><input type="radio" name="area" value="drive" />Within
+          <select id="drive-minutes" aria-label="Minutes">
+            <option>15</option><option selected>30</option><option>45</option><option>60</option>
+          </select> min drive
+        </label>
+        <p class="note" id="area-note">Search above, or pick a distance and click the map to drop a pin (drag to move it).</p>
+      </fieldset>
+
+      <footer>
+        <p class="note">Data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors.
+          “Ice rink” includes hockey-only rinks — check with the rink before assuming public skating.</p>
+      </footer>
+    </aside>
+
+    <script type="module" src="/src/map.ts"></script>
+  </body>
+</html>

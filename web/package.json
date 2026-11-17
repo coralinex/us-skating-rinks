@@ -1,0 +1,23 @@
+{
+  "name": "ice-rink-map-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "maplibre-gl": "^6.18.0",
+    "opening_hours": "^3.16.0",
+    "pmtiles": "^4.5.0",
+    "tz-lookup": "^6.1.25"
+  },
+  "devDependencies": {
+    "@types/geojson": "^7946.0.16",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  }
+}

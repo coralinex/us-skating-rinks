@@ -1,0 +1,39 @@
+# PostGIS is the source of truth in both delivery modes.
+#   docker compose up -d db
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: rinks
+      POSTGRES_USER: rinks
+      POSTGRES_PASSWORD: rinks
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rinks -d rinks"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # --- Realtime mode (milestone 9) -------------------------------------
+  # Uncomment, `docker compose up -d martin`, then set
+  #   VITE_TILE_SOURCE=http://localhost:3000/rinks/{z}/{x}/{y}
+  # in web/.env.local. Nothing else in the frontend changes.
+  #
+  # martin:
+  #   image: ghcr.io/maplibre/martin:latest
+  #   command: ["--config", "/config.yaml"]
+  #   environment:
+  #     DATABASE_URL: postgresql://rinks:rinks@db:5432/rinks
+  #   ports:
+  #     - "3000:3000"
+  #   volumes:
+  #     - ./martin/config.yaml:/config.yaml:ro
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy
+
+volumes:
+  pgdata:

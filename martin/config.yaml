@@ -1,0 +1,29 @@
+# Martin config for realtime mode (unused in static mode).
+# Serves the same `rinks_tiles` view the static pipeline exports, under the
+# same source-layer name ("rinks"), so the frontend only changes TILE_SOURCE.
+listen_addresses: "0.0.0.0:3000"
+
+postgres:
+  connection_string: ${DATABASE_URL}
+  auto_publish: false
+  tables:
+    rinks:                      # source id -> /rinks/{z}/{x}/{y}; also the MVT layer name
+      schema: public
+      table: rinks_tiles
+      srid: 4326
+      geometry_column: geom
+      geometry_type: POINT
+      minzoom: 0
+      maxzoom: 14
+      # View has no primary key; the frontend uses promoteId: "id" instead.
+      properties:
+        id: text
+        name: text
+        indoor: text
+        seasonal: text
+        hours_status: text
+        opening_hours: text
+        website: text
+        phone: text
+        address: text
+        state: text
