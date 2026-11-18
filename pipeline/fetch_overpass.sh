@@ -17,6 +17,11 @@ area["ISO3166-1"="US"][admin_level=2]->.us;
 (
   nwr["leisure"="ice_rink"](area.us);
   nwr["sport"="ice_skating"]["leisure"~"sports_centre|pitch"](area.us);
+  // Ice venues mapped as generic sports centres, e.g. Icetown Riverside is
+  // leisure=sports_centre + sport=skating. These also catch roller rinks;
+  // rink_is_ice_venue() in db/schema.sql keeps only the ice ones.
+  nwr["leisure"~"^(sports_centre|sports_hall)$"]["sport"~"skating|hockey|curling"](area.us);
+  nwr["leisure"~"^(sports_centre|sports_hall)$"]["name"~"(^|[^a-z])(ice|icetown|iceplex|icehouse)([^a-z]|$)",i](area.us);
 )->.rinks;
 OQL
 
@@ -52,17 +57,31 @@ fetch() {  # fetch <query> <output file>
 
 # Context: named areas that CONTAIN each rink (arena building, sports centre,
 # park, school/campus) plus named sports-centre POI nodes within 60 m. Looked
-# up by the rink ids we just fetched, in batches, which is far cheaper for
-# Overpass than repeating the country-wide search. Relations (multipolygon
-# parks, campuses) only need a bounding box.
+# up by rink id, in batches, which is far cheaper for Overpass than repeating
+# the country-wide search. Relations (multipolygon parks, campuses) only need
+# a bounding box.
+#
+# Incremental: the context file records which rinks it already covers
+# (`covered`), and only rinks not yet covered are looked up. Set
+# CONTEXT_FULL=1 to rebuild it from scratch (e.g. for a periodic refresh).
 BATCH="${CONTEXT_BATCH:-250}"
+covered='[]'
+old_ctx="$(mktemp)"; echo '{"elements": []}' > "$old_ctx"
+if [ "${CONTEXT_FULL:-0}" != 1 ] && [ -s "$CONTEXT_JSON" ]; then
+  covered="$(jq -c '.covered // []' "$CONTEXT_JSON")"
+  cp "$CONTEXT_JSON" "$old_ctx"
+fi
+todo="$(jq -c --argjson covered "$covered" \
+  '[.elements[] | "\(.type)/\(.id)"] - $covered' "$RAW_JSON")"
+total="$(jq 'length' <<<"$todo")"
+echo "Context lookups needed for $total rinks"
+
 parts=()
-total="$(jq '.elements | length' "$RAW_JSON")"
 for ((off = 0; off < total; off += BATCH)); do
   set=""
   for t in node way relation; do
     list="$(jq -r --arg t "$t" --argjson o "$off" --argjson n "$BATCH" \
-              '[.elements[$o:$o+$n][] | select(.type == $t) | .id] | join(",")' "$RAW_JSON")"
+              '[.[$o:$o+$n][] | select(startswith($t + "/")) | ltrimstr($t + "/")] | join(",")' <<<"$todo")"
     [ -n "$list" ] && set+="${t/relation/rel}(id:$list);"
   done
   part="$(mktemp)"; parts+=("$part")
@@ -86,6 +105,12 @@ out tags bb;" "$part"
   sleep 5   # be polite to the public server
 done
 
-jq -c -s '{elements: (map(.elements) | add | unique_by([.type, .id]))}' "${parts[@]}" > "$CONTEXT_JSON"
-rm -f "${parts[@]}"
+tmp="$(mktemp)"
+# Files, not --argjson: the element lists are too big for a command line.
+jq -c -s --slurpfile rinks "$RAW_JSON" '
+  { covered:  ((.[0].covered // []) + [$rinks[0].elements[] | "\(.type)/\(.id)"] | unique),
+    elements: (map(.elements) | add | unique_by([.type, .id])) }' \
+  "$old_ctx" ${parts[@]+"${parts[@]}"} > "$tmp"
+mv "$tmp" "$CONTEXT_JSON"; chmod 644 "$CONTEXT_JSON"
+rm -f "$old_ctx" ${parts[@]+"${parts[@]}"}
 echo "Saved $(jq '.elements | length' "$CONTEXT_JSON") context elements to $CONTEXT_JSON"

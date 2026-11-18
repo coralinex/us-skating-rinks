@@ -98,25 +98,41 @@ if the site gets busy.
 
 ## Data
 
-Source: OpenStreetMap via Overpass — `leisure=ice_rink`, plus
-`sport=ice_skating` on `leisure=sports_centre|pitch`, as nodes, ways and
-relations. A second query fetches the **named places that contain each rink**
-(arena buildings, sports centres, parks, schools/campuses), cached as
-`data/raw/context_overpass.json`.
+Source: OpenStreetMap via Overpass, as nodes, ways and relations:
 
-Current snapshot: **2,084 OSM elements → 1,973 rinks**, plus curated holiday and winter-season rinks not in OSM.
+- `leisure=ice_rink`, and `sport=ice_skating` on `leisure=sports_centre|pitch`;
+- ice venues mapped only as a generic sports centre: `leisure=sports_centre|sports_hall`
+  with `sport` containing skating/hockey/curling, or with "Ice" in the name.
+  Some real rinks exist only this way (e.g. Icetown Riverside is
+  `leisure=sports_centre` + `sport=skating`). The same tags match roller rinks,
+  so `rink_is_ice_venue()` in `db/schema.sql` keeps only ice venues.
+
+A second query fetches the **named places that contain each rink** (arena
+buildings, sports centres, parks, schools/campuses), cached as
+`data/raw/context_overpass.json`. It is incremental: only rinks not looked up
+before are queried (`CONTEXT_FULL=1` rebuilds it).
+
+Current snapshot: **2,567 OSM elements → 2,206 rinks** (213 roller rinks and
+skate parks filtered out, the rest merged as duplicates or sheets of one venue),
+plus 70 curated holiday and winter-season rinks not in OSM.
 
 | | count |
 |---|---|
-| Name from the rink's own OSM tags | 1,073 |
-| Name inherited from the surrounding place | 622 |
-| Still unnamed (shown as "Ice rink") | 278 |
-| Has a website | 616 (197 inherited from the surrounding place) |
-| Has an address (at least street or city) | 861 |
-| Indoor / outdoor / not tagged | 852 / 475 / 646 |
-| Has `opening_hours` | **64** (3%) |
+| Name from the rink's own OSM tags | 1,300 |
+| Name inherited from the surrounding place | 614 |
+| Still unnamed (shown as "Ice rink") | 279 |
+| Has a website | 764 (206 inherited from the surrounding place) |
+| Has an address (at least street or city) | 1,101 |
+| Indoor / outdoor / not tagged | 1,049 / 546 / 681 |
+| Has `opening_hours` | **85** (4%) |
 
 ### How names and contact details are derived
+
+A sports complex that contains a separately named, mapped rink is treated as a
+container rather than a rink of its own: "Sidney J. Watson Arena" is shown, the
+"Pickard Field Athletic Complex" around it is not (its details are still
+inherited). Sheets named after their venue ("Olympia Ice Center Rink 3") count
+as sheets of that venue.
 
 OSM often maps the ice sheet itself as "Rink 1", "Blue Rink" or with no name,
 and puts the real name, website and address on the building or park around it.

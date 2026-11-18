@@ -20,6 +20,7 @@ WITH parsed AS (
            ST_MakeValid(geom) AS g
     FROM rinks_raw
     WHERE geom IS NOT NULL AND NOT ST_IsEmpty(geom)
+      AND rink_is_ice_venue(tags::jsonb)        -- drops roller rinks, skate parks
 )
 SELECT
     osm_type,
@@ -151,19 +152,26 @@ ORDER BY s.osm_type, s.osm_id,
          ST_Distance(c.g::geography, s.geom::geography);
 
 -- 3. Inherit from the parent -----------------------------------------------------
+-- A sheet is a rink whose own name is missing or only identifies it within
+-- its parent ("Rink 1", "Olympia Ice Center Rink 3").
+ALTER TABLE parent ADD COLUMN sheet boolean;
+UPDATE parent p SET sheet = (s.name IS NULL OR rink_name_is_sheet_of(s.name, p.p_name))
+FROM stage s WHERE (s.osm_type, s.osm_id) = (p.osm_type, p.osm_id);
+
 UPDATE stage s SET
     parent_name = p.p_name,
     parent_osm  = p.p_type || '/' || p.p_id,
-    group_key   = CASE WHEN p.facility AND (s.name IS NULL OR rink_name_is_generic(s.name))
-                       THEN p.p_type || '/' || p.p_id END,
-    sheet_names = CASE WHEN rink_name_is_generic(s.name) THEN s.name END,
+    group_key   = CASE WHEN p.facility AND p.sheet THEN p.p_type || '/' || p.p_id END,
+    sheet_names = CASE WHEN p.sheet AND s.name IS NOT NULL
+                       THEN CASE WHEN rink_name_is_generic(s.name) THEN s.name
+                            ELSE btrim(substr(s.name, length(p.p_name) + 1), ' -–—:,()') END END,
     name = CASE
-        WHEN s.name IS NULL                AND p.facility THEN p.p_name
-        WHEN s.name IS NULL                               THEN 'Ice rink at ' || p.p_name
-        WHEN rink_name_is_generic(s.name)  AND p.facility THEN p.p_name
-        WHEN rink_name_is_generic(s.name)                 THEN p.p_name || ' – ' || s.name
+        WHEN s.name IS NULL AND p.facility THEN p.p_name
+        WHEN s.name IS NULL                THEN 'Ice rink at ' || p.p_name
+        WHEN p.sheet AND p.facility        THEN p.p_name
+        WHEN rink_name_is_generic(s.name)  THEN p.p_name || ' – ' || s.name
         ELSE s.name END,
-    name_source = CASE WHEN s.name IS NULL OR rink_name_is_generic(s.name)
+    name_source = CASE WHEN s.name IS NULL OR (p.sheet AND p.facility) OR rink_name_is_generic(s.name)
                        THEN 'parent' ELSE 'osm' END,
     website = coalesce(s.website, w.url),
     website_source = CASE WHEN s.website IS NOT NULL THEN 'osm'
@@ -173,8 +181,7 @@ UPDATE stage s SET
     operator = coalesce(s.operator, nullif(btrim(p.p_t->>'operator'), '')),
     -- A venue's hours are a fair proxy for its unnamed sheet; a park's are not.
     opening_hours_raw = coalesce(s.opening_hours_raw,
-        CASE WHEN p.facility AND (s.name IS NULL OR rink_name_is_generic(s.name))
-             THEN nullif(btrim(p.p_t->>'opening_hours'), '') END),
+        CASE WHEN p.facility AND p.sheet THEN nullif(btrim(p.p_t->>'opening_hours'), '') END),
     -- A rink inside a building outline is indoors.
     indoor = coalesce(s.indoor, CASE WHEN p.is_poly AND p.is_building THEN true END),
     -- Take the parent's address only as a whole, never mixed with the rink's.
@@ -191,6 +198,16 @@ CROSS JOIN LATERAL (SELECT (SELECT st.addr_street IS NOT NULL OR st.addr_housenu
                             FROM stage st
                             WHERE (st.osm_type, st.osm_id) = (p.osm_type, p.osm_id)) AS own) a
 WHERE (s.osm_type, s.osm_id) = (p.osm_type, p.osm_id);
+
+-- A sports complex that contains a separately named, mapped rink is a
+-- container, not a rink of its own: "Sidney J. Watson Arena" is the rink,
+-- "Pickard Field Athletic Complex" around it is not. The complex stays in
+-- the context set, so the rink has already inherited its details above.
+DELETE FROM stage v
+WHERE v.tags->>'leisure' IN ('sports_centre', 'sports_hall')
+  AND EXISTS (SELECT 1 FROM parent p JOIN stage r ON (r.osm_type, r.osm_id) = (p.osm_type, p.osm_id)
+              WHERE (p.p_type, p.p_id) = (v.osm_type, v.osm_id)
+                AND NOT p.sheet AND r.footprint IS NOT NULL);
 
 -- Heuristic: a seasonal rink that is not in a building is an outdoor rink
 -- (flooded park rinks, holiday rinks). Documented in the README.
@@ -416,6 +433,12 @@ UPDATE stage SET rink_type = CASE
     WHEN indoor OR seasonal = false THEN 'year_round'
     ELSE 'unknown' END;
 
+-- Sheets mapped only as labelled points ("Rink 1", "Rink 2" nodes inside a
+-- venue outline) are not counted above; distinct sheet labels are.
+UPDATE stage SET sheets = greatest(coalesce(sheets, 0),
+       (SELECT count(DISTINCT lower(x)) FROM unnest(string_to_array(sheet_names, ', ')) x))
+WHERE sheet_names IS NOT NULL;
+
 UPDATE stage SET
     sheets      = CASE WHEN sheets >= 2 THEN sheets END,      -- 1 mapped sheet says nothing
     sheet_names = CASE WHEN sheets >= 2 THEN
@@ -483,7 +506,9 @@ SELECT count(*) FILTER (WHERE indoor)                   AS indoor,
        count(*) FILTER (WHERE indoor = false)           AS outdoor,
        count(*) FILTER (WHERE indoor IS NULL)           AS indoor_unknown,
        count(*) FILTER (WHERE hours_status = 'known')   AS hours_known,
-       (SELECT count(*) FROM rinks_raw) - count(*) FILTER (WHERE osm_type <> 'curated') AS merged_away
+       (SELECT count(*) FROM rinks_raw WHERE NOT rink_is_ice_venue(tags::jsonb)) AS dropped_not_ice,
+       (SELECT count(*) FROM rinks_raw WHERE rink_is_ice_venue(tags::jsonb))
+         - count(*) FILTER (WHERE osm_type <> 'curated')  AS merged_away
 FROM rinks;
 
 SELECT rink_type, source, count(*) FROM rinks GROUP BY 1, 2 ORDER BY 1, 2;

@@ -87,9 +87,55 @@ LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
     SELECT name IS NOT NULL AND btrim(name) ~* (
         '^(the\s+)?'
      || '((ice|skating|hockey|curling|figure|outdoor|indoor|public|community|main|practice|studio|olympic|nhl'
-     ||   '|north|south|east|west|upper|lower|red|blue|green|gold|silver|white|black|orange|purple|yellow)\s+)*'
+     ||   '|north|south|east|west|upper|lower|red|blue|green|gold|silver|white|black|orange|purple|yellow'
+     ||   '|gray|grey|pink|teal|navy|maroon|crimson|bronze|platinum)\s+)*'
      || '(rink|arena|sheet|pad|ice|surface|pond|oval)s?'
      || '(\s*[#-]?\s*([0-9]{1,2}|[a-h]|one|two|three|four|five|six))?$');
+$$;
+
+-- Is `name` just a sheet of the venue `parent`? True when it is generic on
+-- its own ("Rink 2") or is the venue's name plus a generic suffix
+-- ("Olympia Ice Center Rink 3" inside "Olympia Ice Center").
+CREATE OR REPLACE FUNCTION rink_name_is_sheet_of(name text, parent text) RETURNS boolean
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+    SELECT rink_name_is_generic(name)
+        OR (parent IS NOT NULL AND name IS NOT NULL
+            AND length(name) > length(parent)
+            AND lower(left(name, length(parent))) = lower(parent)
+            AND rink_name_is_generic(btrim(substr(name, length(parent) + 1), ' -–—:,()')));
+$$;
+
+-- Is this OSM feature an ICE venue? The fetch query also pulls in generic
+-- sports centres (leisure=sports_centre + sport=skating|hockey, or "Ice" in
+-- the name) because some ice rinks are only mapped that way, e.g. Icetown
+-- Riverside. Those tags also match roller rinks, which this filters out.
+CREATE OR REPLACE FUNCTION rink_is_ice_venue(t jsonb) RETURNS boolean
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+    WITH f AS (
+        SELECT coalesce(t->>'name', '') AS name,
+               ARRAY(SELECT lower(btrim(x)) FROM regexp_split_to_table(coalesce(t->>'sport', ''), ';') x) AS sports
+    ), r AS (
+        SELECT *,
+               name ~* '\m(roller|rollerskat\w*|skate ?(land|station|park|world|zone|city|plex|board)\w*|skateland|kate''s skate)\M'
+                 OR sports && ARRAY['roller_skating', 'roller_hockey', 'skateboard', 'inline_skating']  AS roller
+        FROM f
+    )
+    SELECT CASE
+        WHEN t->>'leisure' = 'ice_rink'                                       THEN true
+        WHEN roller AND NOT sports && ARRAY['ice_skating', 'ice_hockey']      THEN false
+        -- unambiguous ice sports
+        WHEN sports && ARRAY['ice_skating', 'ice_hockey', 'curling', 'figure_skating',
+                             'speed_skating', 'ice_stock']                    THEN true
+        -- "skating" / "hockey" can be roller, dek or field hockey: needs a name,
+        -- and one that is not a court or field unless it says "ice"
+        WHEN sports && ARRAY['skating', 'hockey'] AND name <> ''
+             AND (name ~* '\m(ice|icetown|iceplex|icehouse)\M'
+                  OR name !~* '\m(court|courts|field|fields|gym|gymnasium)\M')  THEN true
+        -- no ice sport tagged: trust an explicit "Ice" in the name
+        WHEN name ~* '\m(ice|icetown|iceplex|icehouse)\M'                    THEN true
+        ELSE false
+    END
+    FROM r;
 $$;
 
 -- http(s) URL or null. Adds a scheme to bare domains, rejects junk.
