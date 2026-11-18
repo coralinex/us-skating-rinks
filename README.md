@@ -54,6 +54,8 @@ export DATABASE_URL=postgresql://localhost:54329/rinks
 
 # 2. Pipeline
 pipeline/fetch_overpass.sh   # optional: data/raw/*.json is cached in the repo (slow: ~10 batched queries)
+pipeline/fetch_wikidata.sh   # optional: websites/addresses for OSM features linked to Wikidata (cached)
+pipeline/fetch_boundaries.sh # Census state/county/place boundaries, ~40 MB, not committed
 pipeline/load.sh             # schema.sql → ogr2ogr → transform.sql
 pipeline/build_tiles.sh      # → web/public/rinks.pmtiles
 
@@ -121,8 +123,8 @@ plus 70 curated holiday and winter-season rinks not in OSM.
 | Name from the rink's own OSM tags | 1,300 |
 | Name inherited from the surrounding place | 614 |
 | Still unnamed (shown as "Ice rink") | 279 |
-| Has a website | 764 (206 inherited from the surrounding place) |
-| Has an address (at least street or city) | 1,101 |
+| Has a website | 814 (235 inherited from the surrounding place, 21 from Wikidata) |
+| Has a street address | 1,018 (every rink has at least a city or county and state) |
 | Indoor / outdoor / not tagged | 1,049 / 546 / 681 |
 | Has `opening_hours` | **85** (4%) |
 
@@ -153,6 +155,32 @@ containing it, or a sports-centre POI within 60 m) and:
 
 The info card always has a Website row: the rink's site, else its Facebook/
 Instagram page, else "Not listed · Search the web".
+
+### Filling gaps beyond OSM tags
+
+Details that don't come from the rink's own OSM tags are kept in their own
+tables and labelled on the card. OSM's own values always win.
+
+- **City and state for every rink** — `pipeline/fetch_boundaries.sh` downloads
+  the US Census cartographic boundaries (states, counties, incorporated places
+  and CDPs); `transform.sql` looks up which ones contain each rink
+  (`place_name`, `county_name`, `state_code`). Rinks without a street address
+  show "Near Riverside, CA" (or "Near Cook County, MN" outside any place), and
+  OSM addresses missing a city get it filled in. Offline, no API.
+- **Wikidata** — `pipeline/fetch_wikidata.sh` looks up the official website
+  (P856) and street address (P6375) of every rink and surrounding place that
+  OSM links to a Wikidata item. Websites are used for the rink and, via the
+  parent, for rinks inside it; addresses only from the rink itself or a sports
+  venue / mall around it (a university's Wikidata address is its office).
+  Cached in `data/raw/wikidata_websites.json`.
+- **Map links** — every card links to Google Maps and Apple Maps (by name near
+  the rink, or by coordinates for unnamed rinks), where phone numbers,
+  websites and hours often exist. The app links to them; it does not copy
+  their data.
+
+Current coverage: every rink has a city/county and state; Wikidata added 50
+websites (21 for the rink itself, 29 via the surrounding place) and one street
+address.
 
 ### Holiday pop-up rinks (curated source)
 

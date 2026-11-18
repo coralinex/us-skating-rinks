@@ -84,10 +84,31 @@ SELECT
     NULL::text          AS source_url,
     NULL::text          AS confidence,
     NULL::text          AS notes,
-    'unknown'::text     AS rink_type
+    'unknown'::text     AS rink_type,
+    NULL::text          AS place_name,
+    NULL::text          AS county_name,
+    NULL::text          AS state_code,
+    NULL::text          AS addr_full,
+    NULL::text          AS address_source
 FROM parsed;
 
 UPDATE stage SET website_source = 'osm' WHERE website IS NOT NULL;
+
+-- Wikidata (pipeline/fetch_wikidata.sh): official website and street address
+-- for features that OSM links to a Wikidata item. OSM's own values win.
+CREATE TEMP TABLE wd ON COMMIT DROP AS
+SELECT qid, rink_clean_url(website) AS website, nullif(btrim(address), '') AS address
+FROM rinks_wikidata_raw;
+
+UPDATE stage s SET
+    website        = coalesce(s.website, wd.website),
+    website_source = CASE WHEN s.website IS NULL AND wd.website IS NOT NULL THEN 'wikidata'
+                          ELSE s.website_source END,
+    addr_full      = CASE WHEN s.addr_street IS NULL AND s.addr_housenumber IS NULL THEN wd.address END,
+    address_source = CASE WHEN s.addr_street IS NULL AND s.addr_housenumber IS NULL
+                           AND wd.address IS NOT NULL THEN 'wikidata' END
+FROM wd
+WHERE wd.qid = rink_first_qid(s.tags->>'wikidata');
 CREATE INDEX ON stage USING gist (geom);
 CREATE INDEX ON stage USING gist ((geom::geography));
 ANALYZE stage;
@@ -174,7 +195,7 @@ UPDATE stage s SET
     name_source = CASE WHEN s.name IS NULL OR (p.sheet AND p.facility) OR rink_name_is_generic(s.name)
                        THEN 'parent' ELSE 'osm' END,
     website = coalesce(s.website, w.url),
-    website_source = CASE WHEN s.website IS NOT NULL THEN 'osm'
+    website_source = CASE WHEN s.website IS NOT NULL THEN coalesce(s.website_source, 'osm')
                           WHEN w.url IS NOT NULL THEN 'parent' END,
     phone    = coalesce(s.phone, nullif(btrim(coalesce(p.p_t->>'phone', p.p_t->>'contact:phone')), '')),
     email    = coalesce(s.email, nullif(btrim(coalesce(p.p_t->>'email', p.p_t->>'contact:email')), '')),
@@ -193,11 +214,26 @@ UPDATE stage s SET
 FROM parent p
 CROSS JOIN LATERAL (SELECT coalesce(rink_clean_url(p.p_t->>'website'),
                                     rink_clean_url(p.p_t->>'contact:website'),
-                                    rink_clean_url(p.p_t->>'url')) AS url) w
+                                    rink_clean_url(p.p_t->>'url'),
+                                    (SELECT wd.website FROM wd
+                                     WHERE wd.qid = rink_first_qid(p.p_t->>'wikidata'))) AS url) w
 CROSS JOIN LATERAL (SELECT (SELECT st.addr_street IS NOT NULL OR st.addr_housenumber IS NOT NULL
                             FROM stage st
                             WHERE (st.osm_type, st.osm_id) = (p.osm_type, p.osm_id)) AS own) a
 WHERE (s.osm_type, s.osm_id) = (p.osm_type, p.osm_id);
+
+-- The parent's Wikidata address, for rinks with no street address at all,
+-- but only from a venue that is about the rink (sports centre, arena, mall).
+-- A university's or park's Wikidata address is its office ("Nassau Hall"),
+-- not where the rink is.
+UPDATE stage s SET addr_full = wd.address, address_source = 'wikidata'
+FROM parent p
+JOIN wd ON wd.qid = rink_first_qid(p.p_t->>'wikidata')
+WHERE (s.osm_type, s.osm_id) = (p.osm_type, p.osm_id)
+  AND s.addr_street IS NULL AND s.addr_housenumber IS NULL AND s.addr_full IS NULL
+  AND wd.address IS NOT NULL
+  AND (p.facility OR p.p_t->>'shop' = 'mall')
+  AND coalesce(p.p_t->>'amenity', '') NOT IN ('university', 'college', 'school');
 
 -- A sports complex that contains a separately named, mapped rink is a
 -- container, not a rink of its own: "Sidney J. Watson Arena" is the rink,
@@ -242,6 +278,8 @@ BEGIN
         addr_city         = coalesce(k.addr_city, d.addr_city),
         addr_state        = coalesce(k.addr_state, d.addr_state),
         addr_postcode     = coalesce(k.addr_postcode, d.addr_postcode),
+        addr_full         = coalesce(k.addr_full, d.addr_full),
+        address_source    = CASE WHEN k.addr_full IS NULL THEN d.address_source ELSE k.address_source END,
         sheets            = coalesce(k.sheets, CASE WHEN k.footprint IS NOT NULL THEN 1 ELSE 0 END) + d.sheets,
         sheet_names       = nullif(concat_ws(', ', k.sheet_names, d.sheet_names), '')
     FROM (
@@ -265,6 +303,8 @@ BEGIN
                (array_agg(l.addr_city)         FILTER (WHERE l.addr_city IS NOT NULL))[1]         AS addr_city,
                (array_agg(l.addr_state)        FILTER (WHERE l.addr_state IS NOT NULL))[1]        AS addr_state,
                (array_agg(l.addr_postcode)     FILTER (WHERE l.addr_postcode IS NOT NULL))[1]     AS addr_postcode,
+               (array_agg(l.addr_full)         FILTER (WHERE l.addr_full IS NOT NULL))[1]         AS addr_full,
+               (array_agg(l.address_source)    FILTER (WHERE l.addr_full IS NOT NULL))[1]         AS address_source,
                coalesce(sum(coalesce(l.sheets, 1)) FILTER (WHERE l.footprint IS NOT NULL), 0)::int AS sheets,
                string_agg(l.sheet_names, ', ' ORDER BY length(l.sheet_names), l.sheet_names)      AS sheet_names
         FROM dupes d
@@ -433,6 +473,23 @@ UPDATE stage SET rink_type = CASE
     WHEN indoor OR seasonal = false THEN 'year_round'
     ELSE 'unknown' END;
 
+-- 8. City, county and state from Census boundaries -------------------------------------
+-- Every rink gets a place to show ("Near Riverside, CA") even when OSM has
+-- no address. Points just outside a generalised boundary (piers, shorelines)
+-- take the nearest state/county within ~5 km.
+UPDATE stage s SET state_code = (
+    SELECT c.stusps FROM census_state c
+    WHERE ST_DWithin(c.geom, s.geom, 0.05)
+    ORDER BY c.geom <-> s.geom LIMIT 1);
+UPDATE stage s SET county_name = (
+    SELECT c.namelsad FROM census_county c
+    WHERE ST_DWithin(c.geom, s.geom, 0.05)
+    ORDER BY c.geom <-> s.geom LIMIT 1);
+UPDATE stage s SET place_name = (
+    SELECT c.name FROM census_place c
+    WHERE ST_Covers(c.geom, s.geom)
+    ORDER BY ST_Area(c.geom) LIMIT 1);
+
 -- Sheets mapped only as labelled points ("Rink 1", "Rink 2" nodes inside a
 -- venue outline) are not counted above; distinct sheet labels are.
 UPDATE stage SET sheets = greatest(coalesce(sheets, 0),
@@ -453,6 +510,7 @@ INSERT INTO rinks AS r (
     website, website_source, social, phone, email, operator, sports, sheets, sheet_names,
     addr_housenumber, addr_street, addr_city, addr_state, addr_postcode,
     source, rink_type, venue, season_start, season_end, verified_season, source_url, confidence, notes,
+    place_name, county_name, state_code, addr_full, address_source,
     tags, updated_at)
 SELECT
     osm_type, osm_id, name, name_source, parent_name, parent_osm, geom, footprint,
@@ -462,6 +520,7 @@ SELECT
     website, website_source, social, phone, email, operator, sports, sheets, sheet_names,
     addr_housenumber, addr_street, addr_city, addr_state, addr_postcode,
     source, rink_type, venue, season_start, season_end, verified_season, source_url, confidence, notes,
+    place_name, county_name, state_code, addr_full, address_source,
     tags, now()
 FROM stage
 ON CONFLICT (osm_type, osm_id) DO UPDATE SET
@@ -481,6 +540,9 @@ ON CONFLICT (osm_type, osm_id) DO UPDATE SET
     season_start = EXCLUDED.season_start, season_end = EXCLUDED.season_end,
     verified_season = EXCLUDED.verified_season, source_url = EXCLUDED.source_url,
     confidence = EXCLUDED.confidence, notes = EXCLUDED.notes,
+    place_name = EXCLUDED.place_name, county_name = EXCLUDED.county_name,
+    state_code = EXCLUDED.state_code, addr_full = EXCLUDED.addr_full,
+    address_source = EXCLUDED.address_source,
     tags = EXCLUDED.tags, updated_at = EXCLUDED.updated_at;
 
 DELETE FROM rinks r
@@ -500,6 +562,14 @@ SELECT count(*)                                              AS rinks,
        count(*) FILTER (WHERE website_source = 'parent')     AS website_from_parent,
        count(*) FILTER (WHERE addr_city IS NOT NULL OR addr_street IS NOT NULL) AS address,
        count(*) FILTER (WHERE sheets IS NOT NULL)            AS multi_sheet
+FROM rinks;
+
+SELECT count(*) FILTER (WHERE state_code IS NULL)                      AS no_state,
+       count(*) FILTER (WHERE coalesce(addr_city, place_name, county_name) IS NULL) AS no_locality,
+       count(*) FILTER (WHERE place_name IS NULL AND addr_city IS NULL) AS county_only,
+       count(*) FILTER (WHERE website_source = 'wikidata')             AS website_wikidata,
+       count(*) FILTER (WHERE address_source = 'wikidata'
+                          AND addr_street IS NULL AND addr_housenumber IS NULL) AS address_wikidata
 FROM rinks;
 
 SELECT count(*) FILTER (WHERE indoor)                   AS indoor,

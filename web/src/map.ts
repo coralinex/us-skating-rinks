@@ -275,6 +275,8 @@ function popupContent(f: MapGeoJSONFeature): HTMLElement {
     v.append(link(displayUrl(website), website));
     if (str('website_source') === 'parent' && str('parent_name') && str('parent_name') !== name) {
       v.append(el('span', ` (${str('parent_name')})`, 'muted'));
+    } else if (str('website_source') === 'wikidata') {
+      v.append(el('span', ' (via Wikidata)', 'muted'));
     }
     fields.append(row('Website', v));
   } else {
@@ -291,7 +293,15 @@ function popupContent(f: MapGeoJSONFeature): HTMLElement {
     }
     fields.append(row('Website', v));
   }
-  if (str('address')) fields.append(row('Address', str('address')!));
+  if (str('address')) {
+    const v = document.createDocumentFragment();
+    v.append(str('address')!);
+    if (str('address_source') === 'wikidata') v.append(el('span', ' (via Wikidata)', 'muted'));
+    fields.append(row('Address', v));
+  } else if (str('locality')) {
+    // No street address anywhere: say roughly where it is (Census boundaries).
+    fields.append(row('Location', `Near ${str('locality')}`));
+  }
   if (str('phone')) fields.append(row('Phone', link(str('phone')!, `tel:${str('phone')!.replace(/[^\d+]/g, '')}`)));
   if (str('email') && /^[^\s@]+@[^\s@]+$/.test(str('email')!)) fields.append(row('Email', link(str('email')!, `mailto:${str('email')}`)));
   if (str('sheet_names')) fields.append(row('Sheets', str('sheet_names')!));
@@ -310,6 +320,15 @@ function popupContent(f: MapGeoJSONFeature): HTMLElement {
 
   const links = el('p', undefined, 'links');
   links.append(link('Directions', `https://www.openstreetmap.org/directions?to=${lat.toFixed(6)},${lon.toFixed(6)}`));
+  // Map apps often have the phone, website and hours that OSM lacks. Link to
+  // them rather than copying their data. Named rinks are searched by name
+  // near the point; unnamed ones just open the coordinates.
+  const ll = `${lat.toFixed(6)},${lon.toFixed(6)}`;
+  const mapQuery = unnamed ? ll : [name, str('locality')].filter(Boolean).join(', ');
+  links.append(link('Google Maps', `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(mapQuery)}`));
+  links.append(link('Apple Maps', unnamed
+    ? `https://maps.apple.com/?ll=${ll}&q=${encodeURIComponent('Ice rink')}`
+    : `https://maps.apple.com/?q=${encodeURIComponent(name)}&sll=${ll}&z=16`));
   const m = /^([nwr])(\d+)$/.exec(str('id') ?? '');
   if (m) {
     const type = { n: 'node', w: 'way', r: 'relation' }[m[1] as 'n' | 'w' | 'r'];

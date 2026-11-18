@@ -35,6 +35,34 @@ else
     "CREATE TABLE rinks_context_raw (osm_type text, osm_id bigint, tags text, geom geometry(Geometry, 4326))"
 fi
 
+# Census boundaries (pipeline/fetch_boundaries.sh). Loaded once; set
+# RELOAD_BOUNDARIES=1 after downloading a newer vintage.
+for layer in state county place; do
+  zip="$BOUNDARY_DIR/$layer/cb_${CENSUS_YEAR}_us_${layer}_500k.zip"
+  have="$(psql "$DATABASE_URL" -Atq -c "SELECT to_regclass('census_$layer') IS NOT NULL")"
+  if [ -s "$zip" ] && { [ "$have" != t ] || [ "${RELOAD_BOUNDARIES:-0}" = 1 ]; }; then
+    echo "Loading Census $layer boundaries ..."
+    ogr2ogr -f PostgreSQL "PG:$DATABASE_URL" "/vsizip/$zip" \
+      -nln "census_$layer" -overwrite -t_srs EPSG:4326 -nlt PROMOTE_TO_MULTI \
+      -ct_opt WARN_ABOUT_DIFFERENT_COORD_OP=NO \
+      -select "$( [ $layer = state ] && echo STUSPS,NAME || echo NAME,NAMELSAD,STUSPS )" \
+      -lco GEOMETRY_NAME=geom -lco FID=gid -lco SPATIAL_INDEX=GIST
+  elif [ "$have" != t ]; then
+    echo "No Census $layer boundaries ($zip); run pipeline/fetch_boundaries.sh." >&2
+    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -c \
+      "CREATE TABLE census_$layer (gid serial PRIMARY KEY, name text, namelsad text, stusps text,
+                                   geom geometry(MultiPolygon, 4326))"
+  fi
+done
+
+# Wikidata websites/addresses (pipeline/fetch_wikidata.sh). Optional.
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -c "TRUNCATE rinks_wikidata_raw"
+if [ -s "$WIKIDATA_JSON" ]; then
+  jq -r '.[] | [.qid, .website, .address] | @csv' "$WIKIDATA_JSON" \
+    | psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -c "\\copy rinks_wikidata_raw FROM STDIN WITH (FORMAT csv)"
+  echo "Loaded $(jq length "$WIKIDATA_JSON") Wikidata items"
+fi
+
 # Curated holiday rinks (not in OSM). Optional, like the context file.
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -c "TRUNCATE rinks_curated_raw"
 if [ -s "$CURATED_CSV" ]; then

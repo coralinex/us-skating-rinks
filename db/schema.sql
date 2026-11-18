@@ -35,7 +35,7 @@ ALTER TABLE rinks
     ADD COLUMN IF NOT EXISTS sports      text,                -- e.g. "ice hockey, curling"
     ADD COLUMN IF NOT EXISTS email       text,
     ADD COLUMN IF NOT EXISTS social      text,                -- Facebook/Instagram URL when no website
-    ADD COLUMN IF NOT EXISTS website_source text;             -- 'osm' | 'parent' | 'curated'
+    ADD COLUMN IF NOT EXISTS website_source text;             -- 'osm' | 'parent' | 'curated' | 'wikidata'
 
 -- Curated (non-OSM) rinks and rink type. Holiday pop-up rinks are mostly
 -- absent from OSM, so they come from data/holiday_rinks.csv and are stored
@@ -59,7 +59,7 @@ ALTER TABLE rinks ADD  CONSTRAINT rinks_name_source_check
     CHECK (name_source IN ('osm', 'parent', 'curated', 'none'));
 ALTER TABLE rinks DROP CONSTRAINT IF EXISTS rinks_website_source_check;
 ALTER TABLE rinks ADD  CONSTRAINT rinks_website_source_check
-    CHECK (website_source IN ('osm', 'parent', 'curated'));
+    CHECK (website_source IN ('osm', 'parent', 'curated', 'wikidata'));
 ALTER TABLE rinks DROP CONSTRAINT IF EXISTS rinks_rink_type_check;
 ALTER TABLE rinks ADD  CONSTRAINT rinks_rink_type_check
     CHECK (rink_type IN ('year_round', 'seasonal', 'holiday', 'unknown'));
@@ -74,6 +74,28 @@ CREATE TABLE IF NOT EXISTS rinks_curated_raw (
     opening_hours text, website text, phone text, source_url text,
     verified_season text, confidence text, notes text
 );
+
+-- Enrichment beyond OSM tags (phase 1): Census boundaries and Wikidata.
+ALTER TABLE rinks
+    ADD COLUMN IF NOT EXISTS place_name     text,   -- Census incorporated place / CDP containing the rink
+    ADD COLUMN IF NOT EXISTS county_name    text,   -- e.g. "Riverside County"
+    ADD COLUMN IF NOT EXISTS state_code     text,   -- USPS code, e.g. "CA"
+    ADD COLUMN IF NOT EXISTS addr_full      text,   -- one-line address when OSM has no street
+    ADD COLUMN IF NOT EXISTS address_source text;   -- source of addr_full: 'wikidata'
+ALTER TABLE rinks DROP CONSTRAINT IF EXISTS rinks_address_source_check;
+ALTER TABLE rinks ADD  CONSTRAINT rinks_address_source_check
+    CHECK (address_source IN ('wikidata'));
+
+-- data/raw/wikidata_websites.json, written by pipeline/fetch_wikidata.sh.
+CREATE TABLE IF NOT EXISTS rinks_wikidata_raw (
+    qid text PRIMARY KEY, website text, address text
+);
+
+-- First valid QID in an OSM wikidata tag ("Q123" or "Q123;Q456").
+CREATE OR REPLACE FUNCTION rink_first_qid(tag text) RETURNS text
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+    SELECT substring(tag FROM 'Q[0-9]+');
+$$;
 
 CREATE INDEX IF NOT EXISTS rinks_geom_gix      ON rinks USING gist (geom);
 -- Geography index so ST_DWithin(geom::geography, ..., metres) is index-assisted.
@@ -182,12 +204,25 @@ SELECT
     sports,
     sheets,
     sheet_names,
-    nullif(concat_ws(', ',
-        nullif(concat_ws(' ', addr_housenumber, addr_street), ''),
-        addr_city,
-        nullif(concat_ws(' ', addr_state, addr_postcode), '')
-    ), '')                                                   AS address,
-    addr_city                                                AS city,
-    addr_state                                               AS state,
+    -- Street address: OSM's own when it has a street, else Wikidata's.
+    -- A city/state alone is not an address; it goes in `locality`.
+    -- Missing city / state are filled from the Census place the rink is in.
+    CASE WHEN addr_street IS NOT NULL OR addr_housenumber IS NOT NULL THEN
+        concat_ws(', ',
+            nullif(concat_ws(' ', addr_housenumber, addr_street), ''),
+            coalesce(addr_city, place_name),
+            nullif(concat_ws(' ', coalesce(addr_state, state_code), addr_postcode), ''))
+         WHEN addr_full IS NOT NULL AND addr_full !~ '\m[A-Z]{2}\M' THEN
+        -- e.g. "1 American Dream Way, 07073" -> add "East Rutherford, NJ"
+        concat_ws(', ', addr_full, coalesce(place_name, county_name), state_code)
+         ELSE addr_full END                                  AS address,
+    CASE WHEN addr_street IS NOT NULL OR addr_housenumber IS NOT NULL THEN NULL
+         ELSE address_source END                             AS address_source,
+    -- "Riverside, CA" / "Riverside County, CA": where the rink is, for every
+    -- rink (Census boundaries), used when there is no street address.
+    nullif(concat_ws(', ', coalesce(addr_city, place_name, county_name),
+                           coalesce(state_code, addr_state)), '') AS locality,
+    coalesce(addr_city, place_name)                          AS city,
+    coalesce(state_code, addr_state)                         AS state,
     geom::geometry(Point, 4326)                              AS geom
 FROM rinks;

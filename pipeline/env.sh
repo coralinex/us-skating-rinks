@@ -22,3 +22,6 @@ if ! command -v psql >/dev/null && command -v brew >/dev/null; then
 fi
 export CONTEXT_JSON="${CONTEXT_JSON:-$ROOT/data/raw/context_overpass.json}"
 export CURATED_CSV="${CURATED_CSV:-$ROOT/data/holiday_rinks.csv}"
+export BOUNDARY_DIR="${BOUNDARY_DIR:-$ROOT/data/boundaries}"
+export CENSUS_YEAR="${CENSUS_YEAR:-2025}"
+export WIKIDATA_JSON="${WIKIDATA_JSON:-$ROOT/data/raw/wikidata_websites.json}"

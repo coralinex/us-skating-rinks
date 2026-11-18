@@ -5,3 +5,4 @@ dist/
 .env.local
 data/build/
 *.log
+data/boundaries/

@@ -44,5 +44,7 @@ postgres:
         sheets: int4
         sheet_names: text
         address: text
+        address_source: text
+        locality: text
         city: text
         state: text
